@@ -29,8 +29,8 @@ want on top:
 ### First-time setup
 
 ```bash
-git clone <this-repo> lunch-ai   # or just cd into the existing folder
-cd lunch-ai
+git clone git@github.com:EdwardPayne/visionite-lunch-api.git
+cd visionite-lunch-api
 npm install
 ```
 
@@ -46,7 +46,7 @@ npm run dev       # development — auto-reload on file change (tsx watch)
 You'll see something like:
 
 ```
-lunch-ai server listening on http://localhost:3000
+visionite-lunch-api listening on http://localhost:3000
   GET  /docs             -> interactive API docs (Swagger UI)
   GET  /openapi.yaml     -> OpenAPI 3.1 spec
   GET  /lunches          -> full cached snapshot (all 27 restaurants)

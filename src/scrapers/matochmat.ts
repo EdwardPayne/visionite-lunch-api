@@ -3,7 +3,7 @@ import type { Dish, Restaurant, Scraper } from "../types.js";
 
 const BASE_URL = "https://www.matochmat.se";
 const USER_AGENT =
-  "lunch-ai-scraper/0.1 (personal lunch guide; contact: marcus@souldrainer.com)";
+  "visionite-lunch-api/0.1 (workshop lunch guide; contact: marcus@souldrainer.com)";
 
 async function fetchHtml(url: string): Promise<string> {
   const res = await fetch(url, {

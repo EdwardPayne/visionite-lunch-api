@@ -1,6 +1,6 @@
 # Notes for Claude
 
-This file briefs future Claude sessions on lunch-ai conventions that aren't
+This file briefs future Claude sessions on visionite-lunch-api conventions that aren't
 self-evident from the code. The user-facing docs live in `README.md` and
 `openapi.yaml` — keep those authoritative; this file is just guardrails.
 

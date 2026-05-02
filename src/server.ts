@@ -97,7 +97,7 @@ app.post("/refresh", async (c) => {
 });
 
 serve({ fetch: app.fetch, port: PORT }, (info) => {
-  console.log(`lunch-ai server listening on http://localhost:${info.port}`);
+  console.log(`visionite-lunch-api listening on http://localhost:${info.port}`);
   console.log(`Active scraper: ${scraper.id} (${scraper.name})`);
   console.log(`  GET  /docs             -> interactive API docs (Swagger UI)`);
   console.log(`  GET  /openapi.yaml     -> OpenAPI 3.1 spec`);
