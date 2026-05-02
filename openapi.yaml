@@ -1,0 +1,256 @@
+openapi: 3.1.0
+info:
+  title: Lunch AI API
+  version: 0.1.0
+  description: |
+    Backend for a "what's for lunch right now?" guide for Östersund, Sweden.
+
+    Data is scraped from [matochmat.se](https://www.matochmat.se/lunch/ostersund/)
+    and cached in memory. The same cached snapshot powers all read endpoints, so
+    hitting them in quick succession does **not** cause additional upstream traffic.
+
+    ### Cache behavior
+    - **Fresh TTL**: 1 hour. While fresh, responses are returned instantly.
+    - **Stale fallback**: 24 hours. If the upstream site fails, we keep serving the
+      last good snapshot rather than a 502, with `X-Cache: STALE` so clients can tell.
+    - **Request coalescing**: concurrent cache misses share a single upstream fetch.
+
+    ### Cache headers (on cached endpoints)
+    | Header | Meaning |
+    |---|---|
+    | `Cache-Control: public, max-age=N` | Remaining freshness in seconds. |
+    | `X-Cache: FRESH \| MISS \| STALE` | Whether this response was served from a fresh cache, just refreshed, or fell back to a stale entry. |
+    | `X-Cache-Age` | Age of the served snapshot, in seconds. |
+    | `X-Cache-Fetched-At` | ISO-8601 timestamp when the snapshot was fetched. |
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+tags:
+  - name: lunches
+    description: Today's lunch data, scraped from matochmat.se.
+  - name: cache
+    description: Cache inspection and management.
+paths:
+  /lunches:
+    get:
+      tags: [lunches]
+      summary: Get today's lunch snapshot for Östersund
+      description: |
+        Returns the full snapshot — every restaurant matochmat.se lists for the city,
+        whether or not they are serving lunch today. Restaurants without dishes have
+        `dishes: []` and typically appear with a "Lunchstängt" note on the source site.
+      parameters:
+        - in: query
+          name: refresh
+          required: false
+          schema:
+            type: string
+            enum: ["1"]
+          description: Set to `1` to bypass the cache and force a fresh scrape.
+      responses:
+        "200":
+          description: A lunch snapshot.
+          headers:
+            X-Cache: { $ref: "#/components/headers/X-Cache" }
+            X-Cache-Age: { $ref: "#/components/headers/X-Cache-Age" }
+            X-Cache-Fetched-At: { $ref: "#/components/headers/X-Cache-Fetched-At" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LunchSnapshot" }
+              examples:
+                saturday:
+                  summary: Saturday — most restaurants closed
+                  value:
+                    city: Östersund
+                    source: https://www.matochmat.se/lunch/ostersund/
+                    scrapedAt: "2026-05-02T06:55:02.121Z"
+                    date: "2026-05-02"
+                    weekday: Saturday
+                    restaurantCount: 27
+                    restaurants:
+                      - name: Basta! Östersund
+                        slug: basta-urban-italian-ostersund
+                        url: https://www.matochmat.se/lunch/ostersund/basta-urban-italian-ostersund/
+                        dishes:
+                          - name: Pasta Bolognese
+                            description: Linguine med långkokt biffragù, aromatiska grönsaker och riven parmesan.
+                            price: 160
+                            currency: SEK
+                            tags: []
+        "502":
+          description: Upstream scrape failed and there was no cache to fall back to.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /restaurants:
+    get:
+      tags: [lunches]
+      summary: Get only restaurants serving lunch right now
+      description: |
+        Same shape as `/lunches`, but filtered to restaurants that have at least one
+        dish with a price (an actual paid lunch offering). Closed restaurants and
+        "à la carte only" notes are excluded — this is the endpoint a "where do I
+        eat right now?" UI usually wants.
+
+        Uses the same cache as `/lunches`; calling both does not double upstream traffic.
+      responses:
+        "200":
+          description: A filtered lunch snapshot.
+          headers:
+            X-Cache: { $ref: "#/components/headers/X-Cache" }
+            X-Cache-Age: { $ref: "#/components/headers/X-Cache-Age" }
+            X-Cache-Fetched-At: { $ref: "#/components/headers/X-Cache-Fetched-At" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LunchSnapshot" }
+        "502":
+          description: Upstream scrape failed and there was no cache to fall back to.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /refresh:
+    post:
+      tags: [cache]
+      summary: Force a re-scrape
+      description: Bypasses the cache and re-fetches the source page. Useful for development; production clients should rely on the natural TTL.
+      responses:
+        "200":
+          description: Refresh succeeded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, fetchedAt]
+                properties:
+                  ok: { type: boolean, const: true }
+                  fetchedAt:
+                    type: string
+                    format: date-time
+                    description: When the refreshed snapshot was scraped.
+        "502":
+          description: Upstream scrape failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, error]
+                properties:
+                  ok: { type: boolean, const: false }
+                  error: { type: string }
+  /health:
+    get:
+      tags: [cache]
+      summary: Server and cache status
+      responses:
+        "200":
+          description: Healthy.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, cached, cacheAgeSeconds]
+                properties:
+                  ok: { type: boolean, const: true }
+                  cached:
+                    type: boolean
+                    description: Whether a snapshot is currently held in cache.
+                  cacheAgeSeconds:
+                    type: [integer, "null"]
+                    description: Age of the cached snapshot in seconds, or null if no cache yet.
+components:
+  headers:
+    X-Cache:
+      schema:
+        type: string
+        enum: [FRESH, MISS, STALE]
+      description: Whether this response was served from cache.
+    X-Cache-Age:
+      schema:
+        type: integer
+        minimum: 0
+      description: Age of the served snapshot in seconds.
+    X-Cache-Fetched-At:
+      schema:
+        type: string
+        format: date-time
+      description: ISO-8601 timestamp when the snapshot was scraped.
+  schemas:
+    LunchSnapshot:
+      type: object
+      required: [city, source, scrapedAt, date, weekday, restaurantCount, restaurants]
+      properties:
+        city:
+          type: string
+          example: Östersund
+        source:
+          type: string
+          format: uri
+          description: Upstream page the snapshot was scraped from.
+          example: https://www.matochmat.se/lunch/ostersund/
+        scrapedAt:
+          type: string
+          format: date-time
+          description: When the upstream page was actually fetched.
+        date:
+          type: string
+          format: date
+          description: Date the snapshot represents (Europe/Stockholm).
+          example: "2026-05-02"
+        weekday:
+          type: string
+          enum: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]
+        restaurantCount:
+          type: integer
+          minimum: 0
+        restaurants:
+          type: array
+          items: { $ref: "#/components/schemas/Restaurant" }
+    Restaurant:
+      type: object
+      required: [name, slug, url, dishes]
+      properties:
+        name:
+          type: string
+          example: Basta! Östersund
+        slug:
+          type: [string, "null"]
+          description: URL slug from matochmat.se, or null if not derivable.
+          example: basta-urban-italian-ostersund
+        url:
+          type: [string, "null"]
+          format: uri
+          description: Link to the restaurant's page on matochmat.se.
+        dishes:
+          type: array
+          items: { $ref: "#/components/schemas/Dish" }
+    Dish:
+      type: object
+      required: [name, description, price, currency, tags]
+      properties:
+        name:
+          type: string
+          example: Pasta Bolognese
+        description:
+          type: [string, "null"]
+          description: Free-text description shown under the dish name.
+          example: Linguine med långkokt biffragù, aromatiska grönsaker och riven parmesan.
+        price:
+          type: [number, "null"]
+          description: Numeric price; null when the source shows no price (e.g. footnote rows).
+          example: 160
+        currency:
+          type: [string, "null"]
+          enum: [SEK, null]
+          description: Currency for `price`. Always SEK when present.
+        tags:
+          type: array
+          description: Diet tags from the source (Swedish).
+          items:
+            type: string
+            example: Vegansk
+          example: [Vegansk, Glutenfri]
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
