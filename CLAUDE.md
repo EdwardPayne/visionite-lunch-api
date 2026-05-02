@@ -6,10 +6,15 @@ self-evident from the code. The user-facing docs live in `README.md` and
 
 ## Product scope
 
-- **Whole week, today-first.** A single scrape returns the full week (Mon–Sun)
-  from matochmat.se's SSR payload. `/week` exposes that; `/lunches` and
-  `/restaurants` are today-projections off the same cached snapshot. Don't add
-  date archives (past weeks) without explicit user approval.
+- **Current week only.** A single scrape returns the **current** ISO week
+  (Mon–Sun) from matochmat.se's SSR payload. `/week` exposes that; `/lunches`
+  and `/restaurants` are today-projections off the same cached snapshot.
+- **Future weeks are not available from this source.** matochmat gates the
+  next-week navigation behind `/konto/logga-in/` — anonymous requests always
+  receive the current week regardless of `?week=` / `?vecka=` params or path
+  variants like `/lunch/ostersund/2026-W19/` (404). Don't add a "next week"
+  endpoint without first finding an alternative source. Past-week archives
+  also require explicit user approval before adding.
 - **One city (Östersund).** The architecture supports more, but only add cities
   on user request.
 

@@ -46,6 +46,10 @@ paths:
         out per Swedish-named weekday slug (`mandag` through `sondag`). Days where a
         restaurant publishes no menu have `dishes: []`.
 
+        Always the **current ISO week**. matochmat.se gates future-week navigation
+        behind a login wall, so this API can't surface upcoming weeks — `week` and
+        `year` in the response identify which week you got.
+
         This is a single scrape — `/lunches` and `/restaurants` are projections of
         the same cached snapshot, so you don't pay extra upstream traffic for the
         weekly view.

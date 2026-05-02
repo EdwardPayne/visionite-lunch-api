@@ -312,6 +312,9 @@ npm run scrape -- --scraper=<id> --save     # combine
   (Mon–Sun) from matochmat.se's SSR payload. `/week` exposes that directly;
   `/lunches` and `/restaurants` keep their original "today" framing by
   projecting the right day out of the same cached snapshot.
+- **Current week only.** matochmat.se hides next-week navigation behind a
+  login wall, so this API only ever serves the current ISO week. The response's
+  `week` and `year` tell you which one you got.
 - **Be polite.** The scraper sends a real `User-Agent` with a contact email and
   hits the source at most once per hour per server instance. Don't lower the TTL
   without good reason.
