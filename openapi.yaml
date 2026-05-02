@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Lunch AI API
+  title: Visionite Lunch API
   version: 0.1.0
   description: |
     Backend for a "what's for lunch right now?" guide for Östersund, Sweden.
