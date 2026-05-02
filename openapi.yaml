@@ -1,13 +1,17 @@
 openapi: 3.1.0
 info:
   title: Visionite Lunch API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     Backend for a "what's for lunch right now?" guide for Östersund, Sweden.
 
-    Data is scraped from [matochmat.se](https://www.matochmat.se/lunch/ostersund/)
-    and cached in memory. The same cached snapshot powers all read endpoints, so
-    hitting them in quick succession does **not** cause additional upstream traffic.
+    A single scrape of [matochmat.se](https://www.matochmat.se/lunch/ostersund/)
+    yields the entire week (Mon–Sun) for every listed restaurant. That snapshot
+    is cached in memory and powers every read endpoint:
+    - `/week` returns the full week.
+    - `/lunches` and `/restaurants` project today's slice out of the same cache.
+
+    Hitting them in quick succession does **not** cause additional upstream traffic.
 
     ### Cache behavior
     - **Fresh TTL**: 1 hour. While fresh, responses are returned instantly.
@@ -23,14 +27,51 @@ info:
     | `X-Cache-Age` | Age of the served snapshot, in seconds. |
     | `X-Cache-Fetched-At` | ISO-8601 timestamp when the snapshot was fetched. |
 servers:
-  - url: http://localhost:3000
+  - url: http://localhost:4010
     description: Local development server
 tags:
   - name: lunches
     description: Today's lunch data, scraped from matochmat.se.
+  - name: week
+    description: Full week (Mon–Sun) of lunch menus.
   - name: cache
     description: Cache inspection and management.
 paths:
+  /week:
+    get:
+      tags: [week]
+      summary: Get the full week of lunch menus
+      description: |
+        Returns every restaurant matochmat.se lists for the city, with menus broken
+        out per Swedish-named weekday slug (`mandag` through `sondag`). Days where a
+        restaurant publishes no menu have `dishes: []`.
+
+        This is a single scrape — `/lunches` and `/restaurants` are projections of
+        the same cached snapshot, so you don't pay extra upstream traffic for the
+        weekly view.
+      parameters:
+        - in: query
+          name: refresh
+          required: false
+          schema:
+            type: string
+            enum: ["1"]
+          description: Set to `1` to bypass the cache and force a fresh scrape.
+      responses:
+        "200":
+          description: A weekly snapshot.
+          headers:
+            X-Cache: { $ref: "#/components/headers/X-Cache" }
+            X-Cache-Age: { $ref: "#/components/headers/X-Cache-Age" }
+            X-Cache-Fetched-At: { $ref: "#/components/headers/X-Cache-Fetched-At" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WeekSnapshot" }
+        "502":
+          description: Upstream scrape failed and there was no cache to fall back to.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /lunches:
     get:
       tags: [lunches]
@@ -175,6 +216,60 @@ components:
         format: date-time
       description: ISO-8601 timestamp when the snapshot was scraped.
   schemas:
+    WeekdaySlug:
+      type: string
+      enum: [mandag, tisdag, onsdag, torsdag, fredag, lordag, sondag]
+      description: Swedish weekday slug. Order is Monday → Sunday.
+    DaySnapshot:
+      type: object
+      required: [weekday, date, restaurantCount, restaurants]
+      properties:
+        weekday: { $ref: "#/components/schemas/WeekdaySlug" }
+        date:
+          type: string
+          format: date
+          description: Calendar date this weekday falls on, in the snapshot's ISO week.
+          example: "2026-04-27"
+        restaurantCount:
+          type: integer
+          minimum: 0
+        restaurants:
+          type: array
+          items: { $ref: "#/components/schemas/Restaurant" }
+    WeekSnapshot:
+      type: object
+      required: [city, source, scrapedAt, week, year, days]
+      properties:
+        city:
+          type: string
+          example: Östersund
+        source:
+          type: string
+          format: uri
+          example: https://www.matochmat.se/lunch/ostersund/
+        scrapedAt:
+          type: string
+          format: date-time
+        week:
+          type: integer
+          minimum: 1
+          maximum: 53
+          description: ISO week number.
+          example: 18
+        year:
+          type: integer
+          example: 2026
+        days:
+          type: object
+          required: [mandag, tisdag, onsdag, torsdag, fredag, lordag, sondag]
+          properties:
+            mandag: { $ref: "#/components/schemas/DaySnapshot" }
+            tisdag: { $ref: "#/components/schemas/DaySnapshot" }
+            onsdag: { $ref: "#/components/schemas/DaySnapshot" }
+            torsdag: { $ref: "#/components/schemas/DaySnapshot" }
+            fredag: { $ref: "#/components/schemas/DaySnapshot" }
+            lordag: { $ref: "#/components/schemas/DaySnapshot" }
+            sondag: { $ref: "#/components/schemas/DaySnapshot" }
     LunchSnapshot:
       type: object
       required: [city, source, scrapedAt, date, weekday, restaurantCount, restaurants]

@@ -36,10 +36,13 @@ async function main() {
     const out = resolve(`data/${scraper.id}.json`);
     await mkdir(dirname(out), { recursive: true });
     await writeFile(out, json + "\n", "utf8");
-    const withDishes = snapshot.restaurants.filter((r) => r.dishes.length > 0).length;
-    console.error(
-      `Saved ${out} — ${snapshot.restaurantCount} restaurants (${withDishes} with dishes today)`,
-    );
+    const dayCounts = Object.entries(snapshot.days)
+      .map(([slug, day]) => {
+        const withDishes = day.restaurants.filter((r) => r.dishes.length > 0).length;
+        return `${slug}:${withDishes}/${day.restaurantCount}`;
+      })
+      .join(" ");
+    console.error(`Saved ${out} — week ${snapshot.year}-W${snapshot.week} (${dayCounts})`);
   } else {
     process.stdout.write(json + "\n");
   }
