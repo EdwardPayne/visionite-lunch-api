@@ -6,9 +6,15 @@ self-evident from the code. The user-facing docs live in `README.md` and
 
 ## Product scope
 
-- **Today-only, right-now-only.** The app answers "where do I eat lunch right
-  now?" — not "what's next Monday's menu?" Don't add weekly/weekday features,
-  date query params, or menu archives without explicit user approval.
+- **Current week only.** A single scrape returns the **current** ISO week
+  (Mon–Sun) from matochmat.se's SSR payload. `/week` exposes that; `/lunches`
+  and `/restaurants` are today-projections off the same cached snapshot.
+- **Future weeks are not available from this source.** matochmat gates the
+  next-week navigation behind `/konto/logga-in/` — anonymous requests always
+  receive the current week regardless of `?week=` / `?vecka=` params or path
+  variants like `/lunch/ostersund/2026-W19/` (404). Don't add a "next week"
+  endpoint without first finding an alternative source. Past-week archives
+  also require explicit user approval before adding.
 - **One city (Östersund).** The architecture supports more, but only add cities
   on user request.
 
@@ -26,19 +32,25 @@ self-evident from the code. The user-facing docs live in `README.md` and
   `src/scrapers/`. Register it in `src/scrapers/index.ts`.
 - For another city on the same source, **reuse the factory** —
   `createMatochmatScraper({ city, citySlug })` — don't copy the parser.
-- Some `.lunchDish` blocks on matochmat.se are footnotes ("Endast à la carte",
-  buffé descriptions, etc.) and have `price: null`. The `/restaurants`
-  endpoint filters them out via `price !== null` **on purpose**. If you "fix"
-  this, you'll re-introduce noise like Tre Rum showing as open on Saturday.
+- The matochmat scraper parses the page's `<script id="ssr-setup-data">` JSON
+  blob, not the rendered DOM. `restaurantData` gives the city's restaurants;
+  `lunchMenuData[].content` is per-restaurant week JSON keyed by `mandag`…`sondag`.
+  Filter `lunchMenuData` to restaurants in `restaurantData` (the menu array is
+  cross-city). If matochmat ever drops/renames the SSR blob, fall back to the
+  CSS-selector parser pattern that's preserved in git history.
+- Some dishes in the source have `price: null` (no price published, footnote
+  rows). The `/restaurants` endpoint filters restaurants whose dishes are all
+  unpriced via `dishes.some(d => d.price !== null)` **on purpose** — without
+  it, places with footnote-only entries show as "open" on days they aren't.
 
 ## API contract
 
 - `openapi.yaml` is the source of truth for the HTTP surface. Update it in the
   same change as any route or schema change — `npx openapi-typescript` clients
   depend on it.
-- The response shape (`LunchSnapshot` → `Restaurant[]` → `Dish[]`) is shared
-  between the server and the future Vue frontend. Breaking changes need a
-  version bump.
+- The response shapes (`WeekSnapshot { days: { mandag: DaySnapshot, … } }` and
+  `LunchSnapshot → Restaurant[] → Dish[]`) are shared between the server and
+  the future Vue frontend. Breaking changes need an `openapi.yaml` version bump.
 
 ## Tooling
 

@@ -15,7 +15,7 @@ lunch-buddy angle on the frontend.
 This repo is just the data layer. Pull the menus from here, build whatever you
 want on top:
 
-- **[Try the API in the browser](http://localhost:3000/docs)** once it's running — Swagger UI lets you fire requests without writing any client code.
+- **[Try the API in the browser](http://localhost:4010/docs)** once it's running — Swagger UI lets you fire requests without writing any client code.
 - **[Generate a typed TS client](#generating-typed-clients-for-the-future-vue-frontend)** from the OpenAPI spec — no hand-maintained types, no drift.
 - **CORS is open** (`*`), so a Vue / React / Svelte / vanilla JS frontend on `localhost:5173` etc. can hit it directly during the workshop.
 
@@ -46,10 +46,12 @@ npm run dev       # development — auto-reload on file change (tsx watch)
 You'll see something like:
 
 ```
-visionite-lunch-api listening on http://localhost:3000
+visionite-lunch-api listening on http://127.0.0.1:4010
   GET  /docs             -> interactive API docs (Swagger UI)
   GET  /openapi.yaml     -> OpenAPI 3.1 spec
-  GET  /lunches          -> full cached snapshot (all 27 restaurants)
+  GET  /week             -> full week snapshot (Mon–Sun)
+  GET  /week?refresh=1   -> bypass cache
+  GET  /lunches          -> today's snapshot (all listed restaurants)
   GET  /lunches?refresh=1 -> bypass cache
   GET  /restaurants      -> only places serving lunch right now
   GET  /health           -> cache status
@@ -57,39 +59,43 @@ visionite-lunch-api listening on http://localhost:3000
 Cache TTL: 60 min, stale fallback: 24 h
 ```
 
-The server listens on `http://localhost:3000`. Override the port with `PORT=4000 npm start`.
+The server listens on `http://127.0.0.1:4010`. Override with `PORT=4000 npm start` or `HOST=0.0.0.0 npm start`.
 
 ### Verify it works
 
 ```bash
-curl localhost:3000/health                          # → {"ok":true,...}
-curl localhost:3000/restaurants | jq '.restaurantCount'
-open http://localhost:3000/docs                     # Swagger UI in your browser
+curl localhost:4010/health                          # → {"ok":true,...}
+curl localhost:4010/restaurants | jq '.restaurantCount'
+open http://localhost:4010/docs                     # Swagger UI in your browser
 ```
 
 The first `/lunches` or `/restaurants` request triggers a scrape and may take ~1 second. After that, responses are served from cache (sub-millisecond) for an hour.
 
 ## Endpoints
 
-| Method | Path                  | What it returns                                                       |
-| ------ | --------------------- | --------------------------------------------------------------------- |
-| GET    | `/lunches`            | Full snapshot — all 27 restaurants, including ones with no menu today |
-| GET    | `/lunches?refresh=1`  | Same, but bypasses the cache                                          |
-| GET    | `/restaurants`        | Only restaurants actually serving lunch right now (priced dishes)     |
-| POST   | `/refresh`            | Force a re-scrape                                                     |
-| GET    | `/health`             | Cache status                                                          |
-| GET    | `/docs`               | Swagger UI                                                            |
-| GET    | `/openapi.yaml`       | OpenAPI 3.1 spec                                                      |
+| Method | Path                  | What it returns                                                                  |
+| ------ | --------------------- | -------------------------------------------------------------------------------- |
+| GET    | `/week`               | Full week (Mon–Sun) for all 27 restaurants                                       |
+| GET    | `/week?refresh=1`     | Same, but bypasses the cache                                                     |
+| GET    | `/lunches`            | Today's snapshot — all 27 restaurants, including ones with no menu today         |
+| GET    | `/lunches?refresh=1`  | Same, but bypasses the cache                                                     |
+| GET    | `/restaurants`        | Only restaurants actually serving lunch today (priced dishes)                    |
+| POST   | `/refresh`            | Force a re-scrape                                                                |
+| GET    | `/health`             | Cache status                                                                     |
+| GET    | `/docs`               | Swagger UI                                                                       |
+| GET    | `/openapi.yaml`       | OpenAPI 3.1 spec                                                                 |
+
+A single scrape returns the whole week, so `/lunches` and `/restaurants` are projections of the same cached `/week` snapshot — no extra upstream traffic for either view.
 
 ### Example
 
 ```bash
-curl localhost:3000/restaurants | jq '.restaurants[] | {name, dishes: (.dishes | length)}'
+curl localhost:4010/restaurants | jq '.restaurants[] | {name, dishes: (.dishes | length)}'
 ```
 
 ## Response shape
 
-All read endpoints return a `LunchSnapshot`:
+`/lunches` and `/restaurants` return a `LunchSnapshot` (today's slice):
 
 ```ts
 type LunchSnapshot = {
@@ -101,7 +107,39 @@ type LunchSnapshot = {
   restaurantCount: number;
   restaurants: Restaurant[];
 };
+```
 
+`/week` returns a `WeekSnapshot` keyed by Swedish weekday slug:
+
+```ts
+type WeekSnapshot = {
+  city: string;
+  source: string;
+  scrapedAt: string;
+  week: number;            // ISO week
+  year: number;
+  days: {
+    mandag:  DaySnapshot;
+    tisdag:  DaySnapshot;
+    onsdag:  DaySnapshot;
+    torsdag: DaySnapshot;
+    fredag:  DaySnapshot;
+    lordag:  DaySnapshot;
+    sondag:  DaySnapshot;
+  };
+};
+
+type DaySnapshot = {
+  weekday: "mandag" | ... | "sondag";
+  date: string;            // "YYYY-MM-DD"
+  restaurantCount: number;
+  restaurants: Restaurant[];
+};
+```
+
+`Restaurant` and `Dish` are shared between both shapes:
+
+```ts
 type Restaurant = {
   name: string;            // e.g. "Basta! Östersund"
   slug: string | null;     // matochmat.se slug
@@ -138,7 +176,7 @@ Every cached response carries:
 | `X-Cache-Fetched-At`    | When the snapshot was actually scraped (ISO-8601)      |
 
 ```bash
-curl -i localhost:3000/lunches | grep -i x-cache
+curl -i localhost:4010/lunches | grep -i x-cache
 # X-Cache: FRESH
 # X-Cache-Age: 137
 # X-Cache-Fetched-At: 2026-05-02T06:55:02.150Z
@@ -170,8 +208,14 @@ export interface Scraper {
   readonly name: string;   // human-readable
   readonly city: string;
   readonly source: string; // upstream URL (informational)
-  scrape(): Promise<Restaurant[]>;
+  scrape(): Promise<WeekScrapeResult>;
 }
+
+type WeekScrapeResult = {
+  week: number;
+  year: number;
+  days: Record<WeekdaySlug, { date: string; restaurants: Restaurant[] }>;
+};
 ```
 
 Two common patterns:
@@ -186,8 +230,8 @@ Two common patterns:
 
 2. **A different source entirely** — drop a new file in `src/scrapers/`, export an
    object that satisfies `Scraper`, and register it in `src/scrapers/index.ts`.
-   The `runScraper()` helper in [`types.ts`](src/types.ts) will wrap your
-   `Restaurant[]` into a full `LunchSnapshot` (date, weekday, etc.) for you.
+   The `runScraper()` helper in [`types.ts`](src/types.ts) wraps your
+   `WeekScrapeResult` into a full `WeekSnapshot` (city, source, scrapedAt) for you.
 
 The CLI picks one up automatically:
 
@@ -205,7 +249,7 @@ no drift between backend and frontend.
 With the server running:
 
 ```bash
-npx openapi-typescript http://localhost:3000/openapi.yaml -o src/api-types.ts
+npx openapi-typescript http://localhost:4010/openapi.yaml -o src/api-types.ts
 ```
 
 Or against the file directly (no server needed):
@@ -222,7 +266,7 @@ import type { components } from "./api-types";
 type LunchSnapshot = components["schemas"]["LunchSnapshot"];
 type Restaurant = components["schemas"]["Restaurant"];
 
-const res = await fetch("http://localhost:3000/restaurants");
+const res = await fetch("http://localhost:4010/restaurants");
 const data: LunchSnapshot = await res.json();
 ```
 
@@ -237,7 +281,7 @@ npm i openapi-fetch
 import createClient from "openapi-fetch";
 import type { paths } from "./api-types";
 
-const api = createClient<paths>({ baseUrl: "http://localhost:3000" });
+const api = createClient<paths>({ baseUrl: "http://localhost:4010" });
 const { data, error } = await api.GET("/restaurants");
 //      ^? typed as LunchSnapshot
 ```
@@ -264,9 +308,13 @@ npm run scrape -- --scraper=<id> --save     # combine
   touching the server or cache layer — see [Adding a new scraper](#adding-a-new-scraper).
 - **In-memory cache.** Vanishes on restart. Fine for a single instance; swap to
   Redis or a tiny disk write if you scale out.
-- **Today only.** The site shows only the current day's menu, and so does this
-  API. That's intentional — the app answers "where do I eat right now?", not
-  "what's the weekly menu?".
+- **Whole week, served two ways.** A single scrape pulls the entire week
+  (Mon–Sun) from matochmat.se's SSR payload. `/week` exposes that directly;
+  `/lunches` and `/restaurants` keep their original "today" framing by
+  projecting the right day out of the same cached snapshot.
+- **Current week only.** matochmat.se hides next-week navigation behind a
+  login wall, so this API only ever serves the current ISO week. The response's
+  `week` and `year` tell you which one you got.
 - **Be polite.** The scraper sends a real `User-Agent` with a contact email and
   hits the source at most once per hour per server instance. Don't lower the TTL
   without good reason.
