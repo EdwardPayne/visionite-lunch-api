@@ -116,9 +116,15 @@ export function todayInStockholm(now: Date = new Date()): {
     weekday: "long",
     timeZone: "Europe/Stockholm",
   });
-  const date = now.toLocaleDateString("en-CA", {
+  const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Europe/Stockholm",
-  });
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((p) => p.type === type)?.value ?? "";
+  const date = `${part("year")}-${part("month")}-${part("day")}`;
   const slug = ENGLISH_TO_SLUG[english];
   if (!slug) throw new Error(`Unrecognized weekday: ${english}`);
   return { slug, english, date };
