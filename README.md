@@ -10,14 +10,45 @@ TypeScript + Hono + cheerio**.
 
 This API is built for an internal **Visionite** AI workshop. The challenge:
 build the best "Where should we eat?" app — bonus points for the social /
-lunch-buddy angle on the frontend.
+lunch-buddy angle.
 
-This repo is just the data layer. Pull the menus from here, build whatever you
-want on top:
+### Workshop setup — for participants
 
-- **[Try the API in the browser](http://localhost:4010/docs)** once it's running — Swagger UI lets you fire requests without writing any client code.
-- **[Generate a typed TS client](#generating-typed-clients-for-the-future-vue-frontend)** from the OpenAPI spec — no hand-maintained types, no drift.
-- **CORS is open** (`*`), so a Vue / React / Svelte / vanilla JS frontend on `localhost:5173` etc. can hit it directly during the workshop.
+**Each team clones this repo to their own machine and extends it.** There is
+no shared hosted instance. Your fork is yours — change what you want.
+
+What you get out of the box:
+
+- **A working lunch data API** (`/week`, `/lunches`, `/restaurants`, `/health`,
+  `/refresh`) backed by a scraper for matochmat.se and a 1-hour cache. These
+  are the **locked workshop contract** — don't change their request/response
+  shape, because everyone else (and your own typed clients) rely on it.
+- **Restart-safe cache.** The scrape snapshot is persisted to `data/` and
+  re-seeded on boot. Restart as often as you want — you won't re-hit
+  matochmat.se for an hour. (Treat the source politely; don't lower the TTL
+  to make it "fresher.")
+- **An [optional auth layer](#optional-auth-better-auth--sqlite)** with email +
+  password — pre-wired but un-gated by default. Use it if you want sign-up /
+  sign-in for free, swap it for your own (Microsoft Entra, an API key, magic
+  links, etc), or delete it entirely.
+- **A typed TS client** you can generate from the OpenAPI spec — see
+  [Generating typed clients](#generating-typed-clients-for-the-future-vue-frontend).
+- **Open extension points.** Add new Hono routes, new scrapers (other cities
+  or other sources), new SQLite tables for your buddy/match/voting feature —
+  it's your fork.
+
+What's locked vs. what's yours:
+
+| Locked (don't break)                                            | Yours (do whatever)                                                  |
+| --------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `/week`, `/lunches`, `/restaurants`, `/health`, `/refresh`      | New routes — buddy signals, matches, votes, favorites, etc.          |
+| `LunchSnapshot` / `WeekSnapshot` / `Restaurant` / `Dish` shapes | New SQLite tables, new auth flow, frontend stack of your choice      |
+| The matochmat.se scrape cadence (1h+ TTL)                       | The auth layer — keep it, replace it, or rip it out                  |
+
+Once the server is running:
+
+- **[Try the API in the browser](http://localhost:4010/docs)** — Swagger UI lets you fire requests without writing any client code.
+- **CORS** allows the origins in `TRUSTED_ORIGINS` (defaults: `http://localhost:5173,http://localhost:3000`) with credentials enabled so auth cookies work. Add your frontend's origin there if it differs.
 
 ## Running the backend
 
@@ -32,9 +63,10 @@ want on top:
 git clone git@github.com:EdwardPayne/visionite-lunch-api.git
 cd visionite-lunch-api
 npm install
+cp .env.example .env    # only required if you change the auth secret or origins
 ```
 
-That's it — no environment variables, no database, no build step.
+For the lunch endpoints, no `.env` is needed — defaults work. For the optional auth, the bundled dev secret in `.env.example` is fine on `localhost`; replace it before deploying anywhere. The SQLite file (`data/auth.db`) is created automatically on first start; migrations run on every boot and are idempotent.
 
 ### Start the server
 
@@ -56,6 +88,8 @@ visionite-lunch-api listening on http://127.0.0.1:4010
   GET  /restaurants      -> only places serving lunch right now
   GET  /health           -> cache status
   POST /refresh          -> force re-scrape
+  *    /api/auth/*       -> better-auth (sign-up, sign-in, sign-out, session)
+  GET  /me               -> current user (auth-gated example)
 Cache TTL: 60 min, stale fallback: 24 h
 ```
 
@@ -84,6 +118,8 @@ The first `/lunches` or `/restaurants` request triggers a scrape and may take ~1
 | GET    | `/health`             | Cache status                                                                     |
 | GET    | `/docs`               | Swagger UI                                                                       |
 | GET    | `/openapi.yaml`       | OpenAPI 3.1 spec                                                                 |
+| \*     | `/api/auth/*`         | better-auth — `sign-up/email`, `sign-in/email`, `sign-out`, `get-session`, ...   |
+| GET    | `/me`                 | Auth-gated example: returns the current user or 401                              |
 
 A single scrape returns the whole week, so `/lunches` and `/restaurants` are projections of the same cached `/week` snapshot — no extra upstream traffic for either view.
 
@@ -160,11 +196,12 @@ See [`openapi.yaml`](openapi.yaml) or `/docs` for the authoritative schema.
 
 ## Caching
 
-Lunch menus barely change within a day, so the server caches the snapshot in memory:
+Lunch menus barely change within a day, so the server caches the scrape in memory with a disk-persisted snapshot to survive restarts:
 
 - **Fresh TTL: 1 hour.** During this window, `/lunches` and `/restaurants` are served instantly with no upstream traffic.
 - **Stale fallback: 24 hours.** If matochmat.se is down or blocks us, we keep serving the last good snapshot rather than a 502.
 - **Request coalescing.** Concurrent cache misses share a single upstream fetch — 100 simultaneous requests on a cold cache produce **one** outgoing request.
+- **Survives restarts.** The snapshot is written to `data/cache-<scraperId>.json` after every successful scrape and re-seeded on boot if it's younger than the stale window. `tsx watch` reloads, full restarts, even rebooting your laptop — none of them re-hit matochmat.se. Override the path with `CACHE_PERSIST_PATH`; delete the file to force a fresh scrape.
 
 Every cached response carries:
 
@@ -182,6 +219,81 @@ curl -i localhost:4010/lunches | grep -i x-cache
 # X-Cache-Fetched-At: 2026-05-02T06:55:02.150Z
 ```
 
+## Optional auth (better-auth + SQLite)
+
+The repo ships with a working email + password auth layer so teams who want
+"sign up, log in, build something behind a login" don't have to wire it
+themselves. It's optional — the lunch endpoints stay anonymous regardless, and
+you can delete `src/auth.ts` + remove the route mount in `src/server.ts` if you
+don't want any of it.
+
+**What's included**
+
+- [`better-auth`](https://better-auth.com) configured with email + password and
+  cookie sessions.
+- A local SQLite database via libsql (no native compile step, no external
+  service). Stored at `data/auth.db`; gitignored.
+- All auth routes mounted at `/api/auth/*` — see better-auth's docs for the
+  full list (`sign-up/email`, `sign-in/email`, `sign-out`, `get-session`,
+  `update-user`, password reset, etc).
+- A reference `/me` route in [`src/server.ts`](src/server.ts) showing how to
+  gate an endpoint, and a `getCurrentUser(c)` helper exported from
+  [`src/auth.ts`](src/auth.ts).
+- Schema migrations run automatically on every server start (idempotent).
+
+**Try it from curl**
+
+```bash
+# sign up — this also signs you in and sets a session cookie
+curl -i -c cookies.txt -X POST http://localhost:4010/api/auth/sign-up/email \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: http://localhost:5173' \
+  -d '{"email":"alice@example.com","password":"hunter2hunter2","name":"Alice"}'
+
+# read the session
+curl -b cookies.txt http://localhost:4010/me
+
+# sign out
+curl -b cookies.txt -c cookies.txt -X POST http://localhost:4010/api/auth/sign-out \
+  -H 'Content-Type: application/json' -d '{}'
+```
+
+**Gating your own routes**
+
+```ts
+import { getCurrentUser } from "./auth.js";
+
+app.post("/lunch-signals", async (c) => {
+  const user = await getCurrentUser(c);
+  if (!user) return c.json({ error: "Login required" }, 401);
+
+  // ...your logic, scoped to user.id
+});
+```
+
+**From the frontend**
+
+better-auth ships matching client SDKs for [Vue](https://www.better-auth.com/docs/integrations/vue),
+React, Svelte and vanilla. Point them at `baseURL: "http://localhost:4010"` and
+include credentials on every fetch (the Vue/React clients do this for you).
+
+**Config**
+
+| Env var               | Default                                            | Purpose                                                       |
+| --------------------- | -------------------------------------------------- | ------------------------------------------------------------- |
+| `BETTER_AUTH_SECRET`  | dev fallback (rejected in production)              | Session signing. `openssl rand -base64 32`.                   |
+| `BETTER_AUTH_URL`     | `http://localhost:4010`                            | Public URL your API is served from.                           |
+| `TRUSTED_ORIGINS`     | `http://localhost:5173,http://localhost:3000`      | Comma-separated frontend origins (CORS + better-auth checks). |
+| `AUTH_DB_PATH`        | `./data/auth.db`                                   | Where the SQLite file lives.                                  |
+
+**Removing it**
+
+If your team wants a different auth (Microsoft Entra ID, an API key, magic
+links, none at all), delete `src/auth.ts`, drop the `import` and the
+`/api/auth/*` mount in [`src/server.ts`](src/server.ts), and remove the
+`better-auth`/`@libsql/*`/`kysely` dependencies from `package.json`. The lunch
+endpoints don't depend on any of it.
+
 ## Project layout
 
 ```
@@ -189,13 +301,17 @@ src/
   types.ts                # shared types + the Scraper interface + runScraper()
   cache.ts                # in-memory single-value cache (stale fallback + coalescing)
   server.ts               # Hono HTTP server
+  auth.ts                 # better-auth instance + getCurrentUser helper + migrations
   scrape.ts               # CLI entry point over the scraper registry
   scrapers/
     index.ts              # registry of all scrapers + getScraper() / defaultScraper
     matochmat.ts          # matochmat.se parser + createMatochmatScraper(city, citySlug)
-data/
-  matochmat-ostersund.json  # produced by `npm run scrape:save`; one file per scraper id
+data/                     # gitignored
+  matochmat-ostersund.json     # produced by `npm run scrape:save`; one file per scraper id
+  cache-matochmat-ostersund.json  # persisted snapshot — survives restarts
+  auth.db                      # SQLite for better-auth (auto-created)
 openapi.yaml              # API spec served at /openapi.yaml and rendered at /docs
+.env.example              # copy to .env and customise
 ```
 
 ### Adding a new scraper
@@ -306,8 +422,10 @@ npm run scrape -- --scraper=<id> --save     # combine
   `Scraper` interface in [`src/types.ts`](src/types.ts) is designed so that
   per-restaurant fallback scrapers (or other aggregators) can be added without
   touching the server or cache layer — see [Adding a new scraper](#adding-a-new-scraper).
-- **In-memory cache.** Vanishes on restart. Fine for a single instance; swap to
-  Redis or a tiny disk write if you scale out.
+- **Single-process cache.** In-memory with a disk-persisted snapshot
+  (`data/cache-<scraperId>.json`) — fine for one local instance per team.
+  If you ever run multiple instances behind a load balancer, swap to Redis or
+  a shared volume.
 - **Whole week, served two ways.** A single scrape pulls the entire week
   (Mon–Sun) from matochmat.se's SSR payload. `/week` exposes that directly;
   `/lunches` and `/restaurants` keep their original "today" framing by

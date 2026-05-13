@@ -13,6 +13,7 @@ import {
 } from "./types.js";
 import { defaultScraper } from "./scrapers/index.js";
 import { SingleValueCache } from "./cache.js";
+import { auth, getCurrentUser, runAuthMigrations } from "./auth.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OPENAPI_PATH = resolve(__dirname, "..", "openapi.yaml");
@@ -22,15 +23,35 @@ const HOSTNAME = process.env.HOST ?? "127.0.0.1";
 const TTL_MS = 60 * 60 * 1000;
 const STALE_MS = 24 * 60 * 60 * 1000;
 
+const TRUSTED_ORIGINS = (process.env.TRUSTED_ORIGINS ?? "http://localhost:5173,http://localhost:3000")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 const scraper = defaultScraper;
+const CACHE_PERSIST_PATH = process.env.CACHE_PERSIST_PATH
+  ? resolve(process.env.CACHE_PERSIST_PATH)
+  : resolve(__dirname, "..", "data", `cache-${scraper.id}.json`);
+
 const cache = new SingleValueCache<WeekSnapshot>({
   ttlMs: TTL_MS,
   staleMs: STALE_MS,
   load: () => runScraper(scraper),
+  persistPath: CACHE_PERSIST_PATH,
 });
 
 const app = new Hono();
-app.use("*", cors());
+app.use(
+  "*",
+  cors({
+    origin: (origin) => (TRUSTED_ORIGINS.includes(origin) ? origin : TRUSTED_ORIGINS[0] ?? ""),
+    credentials: true,
+    allowHeaders: ["Content-Type", "Authorization"],
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  }),
+);
+
+app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
 
 function setCacheHeaders(
   c: Context,
@@ -111,6 +132,12 @@ app.get("/restaurants", async (c) => {
   }
 });
 
+app.get("/me", async (c) => {
+  const user = await getCurrentUser(c);
+  if (!user) return c.json({ error: "Not authenticated" }, 401);
+  return c.json({ user });
+});
+
 app.post("/refresh", async (c) => {
   try {
     const result = await cache.get(true);
@@ -120,6 +147,8 @@ app.post("/refresh", async (c) => {
     return c.json({ ok: false, error: String(err) }, 502);
   }
 });
+
+await runAuthMigrations();
 
 serve({ fetch: app.fetch, port: PORT, hostname: HOSTNAME }, (info) => {
   console.log(`visionite-lunch-api listening on http://${info.address}:${info.port}`);
@@ -133,5 +162,7 @@ serve({ fetch: app.fetch, port: PORT, hostname: HOSTNAME }, (info) => {
   console.log(`  GET  /restaurants      -> only places serving lunch right now`);
   console.log(`  GET  /health           -> cache status`);
   console.log(`  POST /refresh          -> force re-scrape`);
+  console.log(`  *    /api/auth/*       -> better-auth (sign-up, sign-in, sign-out, session)`);
+  console.log(`  GET  /me               -> current user (auth-gated example)`);
   console.log(`Cache TTL: ${TTL_MS / 1000 / 60} min, stale fallback: ${STALE_MS / 1000 / 60 / 60} h`);
 });

@@ -2,4 +2,6 @@ node_modules
 dist
 .DS_Store
 data/
+.env
+.env.local
 .claude/settings.local.json

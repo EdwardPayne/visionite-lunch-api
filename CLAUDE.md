@@ -23,8 +23,11 @@ self-evident from the code. The user-facing docs live in `README.md` and
 - TTL is **1 hour** (fresh), **24 hours** (stale fallback). Don't lower the TTL
   to make data "fresher" — the scraper hits a third-party site and politeness
   matters more than a few minutes of staleness.
-- The cache is in-memory and per-process. If you find yourself wanting Redis,
-  ask first; for the current scale it's overkill.
+- The cache is in-memory **and** persisted to `data/cache-<scraperId>.json` so
+  a restart doesn't re-scrape. On boot, `SingleValueCache` reads the file and
+  seeds itself if the entry is younger than `staleMs`. The write happens after
+  every successful refresh (atomic via tmp + rename). If you find yourself
+  wanting Redis, ask first; for workshop scale this is enough.
 
 ## Scrapers
 
@@ -51,6 +54,25 @@ self-evident from the code. The user-facing docs live in `README.md` and
 - The response shapes (`WeekSnapshot { days: { mandag: DaySnapshot, … } }` and
   `LunchSnapshot → Restaurant[] → Dish[]`) are shared between the server and
   the future Vue frontend. Breaking changes need an `openapi.yaml` version bump.
+- The lunch read endpoints (`/week`, `/lunches`, `/restaurants`) are the
+  **locked workshop contract** — teams fork this repo, so don't change their
+  shape without a deliberate version bump.
+
+## Auth
+
+- Auth is **optional** and shipped as a reference for workshop forks: better-auth
+  + email/password + libsql SQLite, in `src/auth.ts`, mounted at `/api/auth/*`.
+  `/me` is a sample auth-gated route showing how to use `getCurrentUser(c)`.
+- Lunch endpoints stay anonymous regardless — never add an auth check to
+  `/week`, `/lunches`, `/restaurants`, `/refresh`, or `/health`.
+- Migrations run at server start via `runAuthMigrations()` (idempotent).
+  Don't move them to a separate script — workshop expectation is that
+  `npm run dev` just works after `npm install`.
+- Use libsql (`@libsql/kysely-libsql`), **not** `better-sqlite3`. The native
+  build of better-sqlite3 fails on machines without Xcode CLT, which is
+  exactly the friction the workshop is meant to skip.
+- CORS uses `credentials: true` with an allowlist from `TRUSTED_ORIGINS`; the
+  old wildcard `cors()` breaks cookie-based auth. Don't revert it.
 
 ## Tooling
 

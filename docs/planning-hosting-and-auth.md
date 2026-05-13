@@ -1,70 +1,81 @@
-# Hosting & auth — planning notes
+# Hosting & auth — workshop decisions
 
-Status: **brainstorming, no commitments**. Captured 2026-05-05 to revisit later.
-
-Nothing here is implemented or decided. The current API is still anonymous, in-memory cached, and runs locally only.
+Status: **decided 2026-05-13**. Earlier brainstorming (Fly.io + SSO + hosted
+buddy feature) is superseded by the workshop direction below.
 
 ---
 
-## What triggered this
+## Decision
 
-The workshop API may need to grow beyond anonymous lunch data:
+For the AI workshop, teams **fork/clone the backend and run it locally**. The
+shared deliverable is the data layer (scrape + cache + locked read endpoints).
+Everything above that — auth, user-facing features, persistence beyond scrape
+state — is each team's call inside their own fork.
 
-- Users register
-- Users mark themselves "up for lunch" / "looking for a buddy"
-- Users decide on a restaurant together / link up with other "looking" users
+This rules out hosting a shared production backend with central auth. There is
+no shared user identity across teams.
 
-That implies persistent storage and authentication, which the current single-process / in-memory design doesn't support.
+### What we ship in the repo
 
-## Hosting options considered
+- **Locked, anonymous read endpoints** — `/week`, `/lunches`, `/restaurants`,
+  `/health`, `/refresh`, `/docs`, `/openapi.yaml`. These are the workshop
+  contract; teams can rely on the shape and the in-memory cache.
+- **An optional auth reference** — better-auth + email/password + SQLite,
+  pre-wired in `src/auth.ts` and mounted at `/api/auth/*`, plus a sample
+  `/me` route showing how to gate routes with `getCurrentUser(c)`. Teams keep,
+  replace, or remove it; the scrape endpoints work either way.
+- **No buddy/matching feature in this repo.** That's the workshop prompt —
+  teams build it themselves on top of their fork.
 
-For a low-traffic Node + Hono workshop API, three shapes make sense:
+### What we explicitly didn't ship
 
-1. **Fly.io / Railway / Render — managed PaaS, always-on Node process**
-   - Fits the existing in-memory cache (one long-running instance).
-   - Managed Postgres available as an add-on if/when needed.
-   - Free / hobby tiers cover this scale.
+- **No shared hosting.** Each team's app runs against their own clone.
+- **No SSO / Microsoft Entra ID** out of the box. Visionite is on M365, but
+  forcing every team into Entra would lock the workshop into one provider
+  setup. Teams who want SSO swap better-auth for their preferred flow.
+- **No Postgres / Redis / managed DB.** Local SQLite is enough for a
+  half-day workshop on a single machine.
 
-2. **Supabase as the storage + auth layer**
-   - Postgres + auth + JS SDK out of the box.
-   - Fastest to ship auth.
-   - Tradeoff: contestants could hit Supabase directly and bypass our API, splitting the architecture. Pick this only if that's acceptable.
+## Why these picks
 
-3. **Fly.io + SQLite on a volume (or Turso for libSQL replication)**
-   - Single file DB, no separate database service.
-   - Cleanest extension of the current "one process, one cache" design.
-   - Auth still needs a small library (lucia-auth, better-auth).
+**better-auth over Lucia, hand-rolled, or hosted (Clerk/Auth0):**
+- Active maintenance (Lucia is sunset).
+- Email/password + cookie sessions out of the box, no email provider needed.
+- Frontend SDKs for Vue / React / Svelte / vanilla, all opt-in.
+- Teams who don't want auth at all can delete one file.
 
-**Not a fit:** serverless platforms (Vercel / Cloudflare Workers / Lambda). Cold starts would invalidate the in-memory cache between requests, forcing extra scrapes against matochmat.se. Bolting on Redis/KV to fix it adds complexity the project has explicitly avoided.
+**libsql (via `@libsql/kysely-libsql`) over `better-sqlite3`:**
+- No native compile step. `better-sqlite3` requires a working C++ toolchain
+  (Xcode CLT on macOS) which is exactly the kind of "first 30 minutes
+  debugging your machine" friction the workshop is meant to skip.
+- Same SQLite file format; portable.
 
-## Recommended direction (if/when we build this)
+**Cookie sessions over JWT:**
+- One less moving part on the frontend (no token storage / refresh logic).
+- Works with the existing CORS + `credentials: true` setup.
 
-**Fly.io + SQLite-on-volume (or Turso) + SSO via Visionite's identity provider.**
+## Caching: untouched
 
-- Same deployment shape as today: one always-on Node process.
-- SQLite avoids running a separate DB service for workshop scale.
-- SSO (Microsoft/Google, whatever Visionite already uses) means no password storage and identities map to real coworkers — which is what "lunch buddy" actually means. Magic-link is an acceptable fallback if SSO is too much setup for a workshop.
-- `lucia-auth` or `better-auth` handles session plumbing in ~50 lines.
+Adding auth did not change the scrape cache. The 1-hour fresh / 24-hour stale
+TTLs and the in-memory `SingleValueCache` are unchanged. Authenticated and
+anonymous requests both share the same cached snapshot — auth never causes an
+extra scrape.
 
-## Schema sketch
+## Open items teams will face in their forks
 
-Thin domain — three tables would cover the buddy feature:
+If a team decides to ship something past the workshop, these are the next
+decisions — not blockers for the AW session itself:
 
-- **`users`** — `id`, display name, email (or SSO subject), `created_at`
-- **`lunch_signals`** — `user_id`, status (`looking` | `committed`), `expires_at` (auto-clears at end of lunch hour), optional `restaurant_slug`, optional `note`
-- **`buddy_matches`** — `user_a`, `user_b`, signal ids, `created_at` (created when two `looking` signals link up)
+1. **Persistence beyond signals.** SQLite-on-disk is fine for local development;
+   moving to Fly.io / Railway with a volume is straightforward.
+2. **Real SSO.** Swap better-auth's `emailAndPassword` for one of its OAuth
+   providers (Microsoft, Google) or a SAML plugin.
+3. **GDPR / retention.** Anything that stores PII (users, signals, matches)
+   needs a deletion path. Easiest pattern: time-bounded rows (e.g. signals
+   auto-expire at end of day).
+4. **Hosting.** If the buddy feature ever becomes shared rather than per-team,
+   Fly.io + SQLite-on-volume (or Turso) is still the recommended shape — it
+   matches the one-process, one-cache design.
 
-Time-bounded data (signals expire same day) keeps the tables from accumulating state forever.
-
-## API surface impact
-
-- Lunch/restaurant endpoints stay **anonymous** — the scrape data is the public contract for contestants and shouldn't require auth.
-- New endpoints for the buddy feature (`/me`, `/signals`, `/buddies`) would be auth-gated.
-- Cleanly separable so the existing `LunchSnapshot` / `WeekSnapshot` contract is untouched.
-
-## Open questions to answer before building
-
-1. **Who is logging in?** Visionite employees only, workshop contestants, or end-users in general? Determines whether SSO is appropriate.
-2. **What is the "other DB stuff"?** If it's only buddy signals, the schema above is enough. If it grows (favorites, history, votes), revisit before the first migration.
-3. **Retention policy.** Sweden / EU / internal coworkers means GDPR applies. Decide retention rules *before* the schema (e.g. signals auto-delete same day, accounts deletable on request). Shapes the table design and the auth choice.
-4. **Does this API host the buddy feature, or do contestants build it themselves?** The whole reason this API exists is to let contestants skip boring backend work. Providing buddy storage out of the box is a strong workshop boost — but it expands operational scope (PII, sessions, migrations).
+These were the items the original planning doc dug into; the relevant detail
+is still in git history (`git log -- docs/planning-hosting-and-auth.md`).
