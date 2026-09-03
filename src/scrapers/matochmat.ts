@@ -1,4 +1,3 @@
-import * as cheerio from "cheerio";
 import type {
   Dish,
   Restaurant,
@@ -9,15 +8,24 @@ import type {
 import { WEEKDAY_SLUGS } from "../types.js";
 
 const BASE_URL = "https://www.matochmat.se";
+const API_BASE = `${BASE_URL}/rest/v3`;
 const USER_AGENT =
   "visionite-lunch-api/0.1 (workshop lunch guide; contact: marcus@souldrainer.com)";
 
-async function fetchHtml(url: string): Promise<string> {
+async function fetchJson(url: string): Promise<unknown> {
   const res = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT, "Accept-Language": "sv-SE,sv;q=0.9,en;q=0.8" },
+    headers: {
+      "User-Agent": USER_AGENT,
+      Accept: "application/json",
+      "Accept-Language": "sv-SE,sv;q=0.9,en;q=0.8",
+    },
   });
   if (!res.ok) throw new Error(`GET ${url} -> ${res.status} ${res.statusText}`);
-  return await res.text();
+  const body = (await res.json()) as { status?: boolean };
+  if (body.status === false) {
+    throw new Error(`GET ${url} -> API returned status:false`);
+  }
+  return body;
 }
 
 function parsePrice(raw: unknown): number | null {
@@ -25,14 +33,6 @@ function parsePrice(raw: unknown): number | null {
   const cleaned = String(raw).replace(/\s+/g, "").replace(",", ".");
   const m = cleaned.match(/-?\d+(\.\d+)?/);
   return m ? Number(m[0]) : null;
-}
-
-function isoWeekDate(year: number, week: number, weekdayIndex: number): string {
-  const jan4 = new Date(Date.UTC(year, 0, 4));
-  const jan4DayMon0 = (jan4.getUTCDay() + 6) % 7;
-  const week1MondayMs = jan4.getTime() - jan4DayMon0 * 86_400_000;
-  const targetMs = week1MondayMs + ((week - 1) * 7 + weekdayIndex) * 86_400_000;
-  return new Date(targetMs).toISOString().slice(0, 10);
 }
 
 type RawDish = {
@@ -62,86 +62,118 @@ function toDish(raw: RawDish): Dish | null {
   };
 }
 
-type SsrRestaurant = {
+// --- matochmat REST API response shapes (only the fields we use) ---
+
+type ApiWeekDate = {
+  day: { slug: string; dayOfMonth: number };
+  monthSet: { actualMonth: { number: number } };
+  yearSet: { actualYear: { number: number } };
+};
+
+type ApiWeek = {
+  number: number;
+  yearSet: { weekYear: { number: number } };
+  dates: ApiWeekDate[];
+};
+
+type ApiCity = { id: number };
+
+type ApiRestaurant = {
   id: number;
   name: string;
   slug: string | null;
+  pending: boolean;
+  inLockdown: boolean;
 };
 
-type SsrLunchMenu = {
+type ApiMenu = {
   restaurantId: number;
   week: number;
   year: number;
   content: string;
 };
 
-type SsrPayload = {
-  restaurantData: SsrRestaurant[];
-  lunchMenuData: SsrLunchMenu[];
-};
+type ApiListResponse<T> = { status: boolean; data: T[]; count: number };
 
-export function extractSsrPayload(html: string): SsrPayload {
-  const $ = cheerio.load(html);
-  const raw = $("#ssr-setup-data").html();
-  if (!raw) throw new Error("matochmat: <script id='ssr-setup-data'> not found");
-  const data = JSON.parse(raw) as SsrPayload;
-  if (!Array.isArray(data.restaurantData) || !Array.isArray(data.lunchMenuData)) {
-    throw new Error("matochmat: SSR payload missing restaurantData/lunchMenuData");
+async function fetchCurrentWeek(): Promise<{
+  week: number;
+  year: number;
+  dateBySlug: Map<WeekdaySlug, string>;
+}> {
+  const body = (await fetchJson(`${API_BASE}/week`)) as {
+    data: { currentlyShown: ApiWeek };
+  };
+  const shown = body.data?.currentlyShown;
+  if (!shown || typeof shown.number !== "number" || !Array.isArray(shown.dates)) {
+    throw new Error("matochmat: /week response missing currentlyShown week");
   }
-  return data;
+  const year = shown.yearSet?.weekYear?.number;
+  if (typeof year !== "number") {
+    throw new Error("matochmat: /week response missing weekYear");
+  }
+  const dateBySlug = new Map<WeekdaySlug, string>();
+  for (const d of shown.dates) {
+    const slug = d.day?.slug as WeekdaySlug;
+    if (!WEEKDAY_SLUGS.includes(slug)) continue;
+    const yyyy = d.yearSet.actualYear.number;
+    const mm = String(d.monthSet.actualMonth.number).padStart(2, "0");
+    const dd = String(d.day.dayOfMonth).padStart(2, "0");
+    dateBySlug.set(slug, `${yyyy}-${mm}-${dd}`);
+  }
+  return { week: shown.number, year, dateBySlug };
 }
 
-export function buildWeekFromSsr(
-  data: SsrPayload,
-  citySlug: string,
-): WeekScrapeResult {
-  const restaurantsById = new Map<number, SsrRestaurant>();
-  for (const r of data.restaurantData) restaurantsById.set(r.id, r);
-
-  const menusForCity = data.lunchMenuData.filter((m) =>
-    restaurantsById.has(m.restaurantId),
-  );
-  if (menusForCity.length === 0) {
-    throw new Error("matochmat: no lunch menus for any restaurant in city");
+async function fetchCityId(citySlug: string): Promise<number> {
+  const url = `${API_BASE}/cities?filter%5Bslug%5D=${encodeURIComponent(citySlug)}`;
+  const body = (await fetchJson(url)) as ApiListResponse<ApiCity>;
+  const city = body.data?.[0];
+  if (!city || typeof city.id !== "number") {
+    throw new Error(`matochmat: no city found for slug "${citySlug}"`);
   }
+  return city.id;
+}
 
-  const week = menusForCity[0].week;
-  const year = menusForCity[0].year;
-
-  const days = {} as Record<WeekdaySlug, { date: string; restaurants: Restaurant[] }>;
-  for (let i = 0; i < WEEKDAY_SLUGS.length; i++) {
-    const slug = WEEKDAY_SLUGS[i];
-    days[slug] = { date: isoWeekDate(year, week, i), restaurants: [] };
+async function fetchLunchRestaurants(cityId: number): Promise<ApiRestaurant[]> {
+  const params = new URLSearchParams();
+  params.set("filter[cityId]", String(cityId));
+  params.set("filter[lunchFunctionality][active]", "true");
+  const body = (await fetchJson(
+    `${API_BASE}/restaurants?${params}`,
+  )) as ApiListResponse<ApiRestaurant>;
+  if (!Array.isArray(body.data)) {
+    throw new Error("matochmat: restaurants response missing data array");
   }
+  return body.data
+    .filter((r) => !r.pending && !r.inLockdown)
+    .sort((a, b) => a.name.localeCompare(b.name, "sv"));
+}
 
-  const sorted = [...restaurantsById.values()].sort((a, b) =>
-    a.name.localeCompare(b.name, "sv"),
-  );
-
-  for (const rest of sorted) {
-    const menu = menusForCity.find((m) => m.restaurantId === rest.id);
+async function fetchMenus(
+  restaurantIds: number[],
+  week: number,
+  year: number,
+): Promise<Map<number, Record<string, RawDish[]>>> {
+  const params = new URLSearchParams();
+  params.set("restaurantIds", restaurantIds.join(","));
+  params.set("week", String(week));
+  params.set("year", String(year));
+  const body = (await fetchJson(
+    `${API_BASE}/menus?${params}`,
+  )) as ApiListResponse<ApiMenu>;
+  if (!Array.isArray(body.data)) {
+    throw new Error("matochmat: menus response missing data array");
+  }
+  const byRestaurant = new Map<number, Record<string, RawDish[]>>();
+  for (const menu of body.data) {
     let parsed: Record<string, RawDish[]> = {};
-    if (menu) {
-      try {
-        parsed = JSON.parse(menu.content) as Record<string, RawDish[]>;
-      } catch {
-        parsed = {};
-      }
+    try {
+      parsed = JSON.parse(menu.content) as Record<string, RawDish[]>;
+    } catch {
+      parsed = {};
     }
-    const url = rest.slug ? `${BASE_URL}/lunch/${citySlug}/${rest.slug}/` : null;
-    for (const slug of WEEKDAY_SLUGS) {
-      const rawDishes = Array.isArray(parsed[slug]) ? parsed[slug] : [];
-      const dishes = rawDishes.map(toDish).filter((d): d is Dish => d !== null);
-      days[slug].restaurants.push({
-        name: rest.name,
-        slug: rest.slug ?? null,
-        url,
-        dishes,
-      });
-    }
+    byRestaurant.set(menu.restaurantId, parsed);
   }
-
-  return { week, year, days };
+  return byRestaurant;
 }
 
 export type MatochmatConfig = {
@@ -150,16 +182,48 @@ export type MatochmatConfig = {
 };
 
 export function createMatochmatScraper({ city, citySlug }: MatochmatConfig): Scraper {
-  const source = `${BASE_URL}/lunch/${citySlug}/`;
+  const source = `${BASE_URL}/restauranger/${citySlug}/lunch/`;
   return {
     id: `matochmat-${citySlug}`,
     name: `matochmat.se — ${city}`,
     city,
     source,
-    async scrape() {
-      const html = await fetchHtml(source);
-      const payload = extractSsrPayload(html);
-      return buildWeekFromSsr(payload, citySlug);
+    async scrape(): Promise<WeekScrapeResult> {
+      const { week, year, dateBySlug } = await fetchCurrentWeek();
+      const cityId = await fetchCityId(citySlug);
+      const restaurants = await fetchLunchRestaurants(cityId);
+      if (restaurants.length === 0) {
+        throw new Error(`matochmat: no lunch restaurants found for ${city}`);
+      }
+      const menus = await fetchMenus(
+        restaurants.map((r) => r.id),
+        week,
+        year,
+      );
+
+      const days = {} as Record<WeekdaySlug, { date: string; restaurants: Restaurant[] }>;
+      for (const slug of WEEKDAY_SLUGS) {
+        days[slug] = { date: dateBySlug.get(slug) ?? "", restaurants: [] };
+      }
+
+      for (const rest of restaurants) {
+        const content = menus.get(rest.id) ?? {};
+        const url = rest.slug
+          ? `${BASE_URL}/restauranger/${citySlug}/lunch/${rest.slug}/`
+          : null;
+        for (const slug of WEEKDAY_SLUGS) {
+          const rawDishes = Array.isArray(content[slug]) ? content[slug] : [];
+          const dishes = rawDishes.map(toDish).filter((d): d is Dish => d !== null);
+          days[slug].restaurants.push({
+            name: rest.name,
+            slug: rest.slug ?? null,
+            url,
+            dishes,
+          });
+        }
+      }
+
+      return { week, year, days };
     },
   };
 }

@@ -2,9 +2,9 @@
 
 Backend for a "what's for lunch right now?" guide for **Östersund, Sweden**.
 
-It scrapes [matochmat.se/lunch/ostersund](https://www.matochmat.se/lunch/ostersund/),
+It scrapes [matochmat.se/restauranger/ostersund/lunch](https://www.matochmat.se/restauranger/ostersund/lunch/),
 caches the result in memory, and exposes a small JSON API. Built with **Node 20 +
-TypeScript + Hono + cheerio**.
+TypeScript + Hono**.
 
 ## About this repo
 
@@ -200,7 +200,7 @@ Lunch menus barely change within a day, so the server caches the scrape in memor
 
 - **Fresh TTL: 1 hour.** During this window, `/lunches` and `/restaurants` are served instantly with no upstream traffic.
 - **Stale fallback: 24 hours.** If matochmat.se is down or blocks us, we keep serving the last good snapshot rather than a 502.
-- **Request coalescing.** Concurrent cache misses share a single upstream fetch — 100 simultaneous requests on a cold cache produce **one** outgoing request.
+- **Request coalescing.** Concurrent cache misses share a single upstream scrape — 100 simultaneous requests on a cold cache produce **one** outgoing scrape (4 small requests to matochmat's JSON API).
 - **Survives restarts.** The snapshot is written to `data/cache-<scraperId>.json` after every successful scrape and re-seeded on boot if it's younger than the stale window. `tsx watch` reloads, full restarts, even rebooting your laptop — none of them re-hit matochmat.se. Override the path with `CACHE_PERSIST_PATH`; delete the file to force a fresh scrape.
 
 Every cached response carries:
@@ -427,7 +427,7 @@ npm run scrape -- --scraper=<id> --save     # combine
   If you ever run multiple instances behind a load balancer, swap to Redis or
   a shared volume.
 - **Whole week, served two ways.** A single scrape pulls the entire week
-  (Mon–Sun) from matochmat.se's SSR payload. `/week` exposes that directly;
+  (Mon–Sun) from matochmat.se's own JSON API. `/week` exposes that directly;
   `/lunches` and `/restaurants` keep their original "today" framing by
   projecting the right day out of the same cached snapshot.
 - **Current week only.** matochmat.se hides next-week navigation behind a
