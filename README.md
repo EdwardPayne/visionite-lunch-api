@@ -2,7 +2,7 @@
 
 Backend for a "what's for lunch right now?" guide for **Östersund, Sweden**.
 
-It scrapes [matochmat.se/lunch/ostersund](https://www.matochmat.se/lunch/ostersund/),
+It scrapes [matochmat.se/restauranger/ostersund/lunch](https://www.matochmat.se/restauranger/ostersund/lunch/),
 caches the result in memory, and exposes a small JSON API. Built with **Node 20 +
 TypeScript + Hono**.
 
