@@ -35,12 +35,16 @@ self-evident from the code. The user-facing docs live in `README.md` and
   `src/scrapers/`. Register it in `src/scrapers/index.ts`.
 - For another city on the same source, **reuse the factory** —
   `createMatochmatScraper({ city, citySlug })` — don't copy the parser.
-- The matochmat scraper parses the page's `<script id="ssr-setup-data">` JSON
-  blob, not the rendered DOM. `restaurantData` gives the city's restaurants;
-  `lunchMenuData[].content` is per-restaurant week JSON keyed by `mandag`…`sondag`.
-  Filter `lunchMenuData` to restaurants in `restaurantData` (the menu array is
-  cross-city). If matochmat ever drops/renames the SSR blob, fall back to the
-  CSS-selector parser pattern that's preserved in git history.
+- The matochmat scraper talks to the site's own JSON REST API under
+  `/rest/v3/` — 4 requests per scrape: `/week` (which ISO week the site
+  currently shows, plus per-day dates), `/cities?filter[slug]=<city>`,
+  `/restaurants?filter[cityId]=N&filter[lunchFunctionality][active]=true`
+  (must be the string `true`; `1`/`0` both match inactives), and
+  `/menus?restaurantIds=…&week=N&year=Y` (`content` is per-restaurant week
+  JSON keyed by `mandag`…`sondag`). Pending/in-lockdown restaurants are
+  filtered out to match the site. The old `<script id="ssr-setup-data">`
+  blob is gone (2026 redesign) and the rendered HTML only shows *today*;
+  the CSS-selector parser pattern is preserved in git history if ever needed.
 - Some dishes in the source have `price: null` (no price published, footnote
   rows). The `/restaurants` endpoint filters restaurants whose dishes are all
   unpriced via `dishes.some(d => d.price !== null)` **on purpose** — without
